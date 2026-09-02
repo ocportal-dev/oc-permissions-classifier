@@ -45,6 +45,11 @@ describe("SYSTEM_PROMPT", () => {
     }
   })
 
+  it("tells the model that RESOURCE_LOCATION is authoritative", () => {
+    expect(SYSTEM_PROMPT).toContain("RESOURCE_LOCATION")
+    expect(SYSTEM_PROMPT).toContain("authoritative")
+  })
+
   it("names every level of every axis", () => {
     for (const level of [
       "risk_level",

@@ -115,6 +115,7 @@ Uncertain actions then block instead of turning into an auto-approved `ask`.
 ## What the model sees
 
 - The action and the resources.
+- Whether each path resource is inside the project, in your home directory, or elsewhere. The plugin computes this; the model does not guess.
 - The metadata, for example an edit diff preview.
 - The last N user messages.
 - The last assistant text, marked as an untrusted stated purpose.

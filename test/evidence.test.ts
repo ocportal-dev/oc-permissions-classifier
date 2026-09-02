@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { buildEvidence, extractIntent, neutralizeTags, type Intent } from "../src/evidence.js"
+import { buildEvidence, extractIntent, neutralizeTags, resourceLocation, type Intent } from "../src/evidence.js"
 import { redactSecrets } from "../src/redact.js"
 import type { PermissionEvent } from "../src/types.js"
 
@@ -122,6 +122,46 @@ const INTENT: Intent = {
   status: "available (3 user messages)",
 }
 
+describe("resourceLocation", () => {
+  const at = (action: string, resource: string, project = "/proj", home = "/Users/u") =>
+    resourceLocation(action, resource, project, home)
+
+  it("resolves a relative and an absolute project path to inside project", () => {
+    expect(at("read", "src/a.ts")).toBe("inside project")
+    expect(at("read", "/proj/src/a.ts")).toBe("inside project")
+  })
+
+  it("reports a path in the home directory outside the project", () => {
+    expect(at("edit", "/Users/u/.opencode/plan/x.md")).toBe("outside project (home directory)")
+  })
+
+  it("reports a system path", () => {
+    expect(at("read", "/etc/hosts")).toBe("outside project (system)")
+  })
+
+  it("expands a leading ~ and $HOME", () => {
+    expect(at("read", "~/notes.md")).toBe("outside project (home directory)")
+    expect(at("read", "$HOME/notes.md")).toBe("outside project (home directory)")
+  })
+
+  it("strips the trailing wildcard of an external_directory resource", () => {
+    expect(at("external_directory", "/tmp/x/*")).toBe("outside project (system)")
+    expect(at("external_directory", "/proj/sub/*")).toBe("inside project")
+  })
+
+  it("requires a separator after the project directory", () => {
+    expect(resourceLocation("read", "/project-other/a.ts", "/project", "/Users/u")).toBe(
+      "outside project (system)",
+    )
+  })
+
+  it("reports an action whose resource is not a path", () => {
+    expect(at("shell", "git status")).toBe("not a path")
+    expect(at("webfetch", "https://example.test")).toBe("not a path")
+    expect(at("linear_issue_create", "create an issue")).toBe("not a path")
+  })
+})
+
 describe("buildEvidence", () => {
   const evidence = buildEvidence({
     event: EVENT,
@@ -139,6 +179,7 @@ describe("buildEvidence", () => {
     expect(evidence).toContain("RESOURCES (each item is authorized by this one decision):")
     expect(evidence).toContain("1. git status")
     expect(evidence).toContain("2. git push --force origin main")
+    expect(evidence).toContain("RESOURCE_LOCATION: 1. not a path; 2. not a path")
     expect(evidence).toContain('METADATA: {"title":"push"}')
     expect(evidence).toContain("TOOL: bash")
     expect(evidence).toContain('TOOL_INPUT: {"command":"git push"}')
@@ -153,13 +194,27 @@ describe("buildEvidence", () => {
   })
 
   it("keeps the sections in order", () => {
-    const order = ["ACTION:", "AGENT:", "PROJECT_DIRECTORY:", "RESOURCES", "METADATA:", "TOOL:", "TOOL_INPUT:", "SHELL_CWD:", "SHELL_COMMAND:", "DIRECT_USER_INTENT", "USER_INTENT_HISTORY", "AGENT_STATED_PURPOSE", "TRANSCRIPT_STATUS:"]
+    const order = ["ACTION:", "AGENT:", "PROJECT_DIRECTORY:", "RESOURCES", "RESOURCE_LOCATION:", "METADATA:", "TOOL:", "TOOL_INPUT:", "SHELL_CWD:", "SHELL_COMMAND:", "DIRECT_USER_INTENT", "USER_INTENT_HISTORY", "AGENT_STATED_PURPOSE", "TRANSCRIPT_STATUS:"]
     let cursor = -1
     for (const marker of order) {
       const index = evidence.indexOf(marker)
       expect(index).toBeGreaterThan(cursor)
       cursor = index
     }
+  })
+
+  it("locates every resource of a path action", () => {
+    const located = buildEvidence({
+      event: { sessionID: "ses_9", action: "read", resources: ["src/a.ts", "~/notes.md", "/etc/hosts"], effect: "ask" },
+      intent: { history: [], status: "unavailable" },
+      projectDirectory: "/work/app",
+      home: "/Users/u",
+      maxEvidenceChars: 4000,
+      maxIntentChars: 4000,
+    })
+    expect(located).toContain(
+      "RESOURCE_LOCATION: 1. inside project; 2. outside project (home directory); 3. outside project (system)",
+    )
   })
 
   it("falls back when the optional parts are missing", () => {

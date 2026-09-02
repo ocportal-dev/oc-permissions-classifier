@@ -28,7 +28,7 @@ npm is the package manager. Bun is the test runner only. There is no linter.
 - **`src/brake.ts`** — Emergency brake. Blocks a small set of actions before the model is called.
 - **`src/correlation.ts`** — Links `tool.execute.before` and `shell.create.before` records to the matching `permission.evaluate` call.
 - **`src/policy.ts`** — Holds the built-in policy text and merges a user override.
-- **`src/evidence.ts`** — Builds the evidence payload sent to the model. Applies the size limits.
+- **`src/evidence.ts`** — Builds the evidence payload sent to the model. Applies the size limits. Resolves each path resource against the project directory and the home directory, and reports the result on the `RESOURCE_LOCATION` line.
 - **`src/decision.ts`** — Parses the model output into a decision. Applies the deterministic gate.
 - **`src/classifier.ts`** — Runs one review: builds the prompt, calls the injected model function under a timeout, retries once for JSON, and applies the gate. Never throws.
 - **`src/audit.ts`** — Appends one JSON line per decision to the audit log.

@@ -1,3 +1,5 @@
+import { homedir } from "node:os"
+import { join, resolve, sep } from "node:path"
 import { capText, redactSecrets, redactValue } from "./redact.js"
 import type { CorrelatedCall, PermissionEvent } from "./types.js"
 
@@ -109,6 +111,31 @@ const block = (text: string): string => neutralizeTags(redactSecrets(text)).spli
 const structured = (value: unknown, max: number): string =>
   capText(neutralizeTags(redactSecrets(JSON.stringify(redactValue(value)) ?? "null")), max)
 
+const PATH_ACTIONS = new Set(["read", "edit", "external_directory"])
+
+function expandHome(resource: string, home: string): string {
+  if (resource === "~" || resource === "$HOME") return home
+  if (resource.startsWith("~/")) return join(home, resource.slice(2))
+  if (resource.startsWith("$HOME/")) return join(home, resource.slice(6))
+  return resource
+}
+
+/**
+ * Resolves where one resource lives, so the model reads the location instead of inferring
+ * it from the path text. Only read, edit, and external_directory resources are paths.
+ */
+export function resourceLocation(action: string, resource: string, projectDirectory: string, home: string): string {
+  if (!PATH_ACTIONS.has(action)) return "not a path"
+  // An external_directory resource names the directory as `<dir>/*`.
+  const target = action === "external_directory" && resource.endsWith("/*") ? resource.slice(0, -1) : resource
+  const project = resolve(projectDirectory)
+  const resolved = resolve(project, expandHome(target, home))
+  if (resolved === project || resolved.startsWith(project + sep)) return "inside project"
+  const root = resolve(home)
+  const inHome = resolved === root || resolved.startsWith(root + sep)
+  return `outside project (${inHome ? "home directory" : "system"})`
+}
+
 export interface EvidenceInput {
   event: PermissionEvent
   intent: Intent
@@ -116,6 +143,8 @@ export interface EvidenceInput {
   projectDirectory: string
   maxEvidenceChars: number
   maxIntentChars: number
+  /** Defaults to `os.homedir()`. Injected by the tests. */
+  home?: string
 }
 
 export function buildEvidence(input: EvidenceInput): string {
@@ -130,6 +159,12 @@ export function buildEvidence(input: EvidenceInput): string {
   event.resources.forEach((resource, index) => {
     lines.push(`${index + 1}. ${single(resource)}`)
   })
+
+  const home = input.home ?? homedir()
+  const locations = event.resources.map(
+    (resource, index) => `${index + 1}. ${resourceLocation(event.action, resource, input.projectDirectory, home)}`,
+  )
+  lines.push(`RESOURCE_LOCATION: ${single(locations.join("; "))}`)
 
   lines.push(`METADATA: ${event.metadata ? structured(event.metadata, share) : "none"}`)
 
