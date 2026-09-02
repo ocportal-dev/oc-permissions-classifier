@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "opencode-permissions-classifier",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Model-backed permission classifier for OpenCode v2: reviews ask decisions with a configured provider/model and allows, denies, or escalates.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "permissions",
+    "classifier"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "test": "bun test",
+    "prepack": "npm run build"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "dependencies": {
+    "@opencode-ai/plugin": "0.0.0-beta-18743"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "bun-types": "^1.4.0",
+    "typescript": "^5.8.0"
+  }
+}
