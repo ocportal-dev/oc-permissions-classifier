@@ -30,12 +30,12 @@
     "dist",
     "README.md"
   ],
-  "dependencies": {
-    "@opencode-ai/plugin": "0.0.0-beta-18743"
-  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "bun-types": "^1.4.0",
     "typescript": "^5.8.0"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.0.5"
   }
 }

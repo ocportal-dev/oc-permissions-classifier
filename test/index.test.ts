@@ -2,7 +2,7 @@ import { expect, it } from "bun:test"
 import { mkdtemp, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { Plugin } from "@opencode-ai/plugin"
+import type { Plugin } from "@opencode/plugin"
 import plugin from "../src/index.js"
 import type { AuditRecord, PermissionEvent } from "../src/types.js"
 

@@ -6,7 +6,7 @@ Guidance for coding agents working in this repository.
 
 An opencode plugin (`opencode-permissions-classifier`) that reviews permission evaluations which the static permission rules resolved to `ask`. For each of those requests, the plugin builds evidence (the action, the resources, the metadata, the recent user intent, and the tool input) and sends it to a user-configured provider/model. The model returns a decision, and the plugin turns that decision into `allow`, `deny`, or an escalation back to the user. Every error path fails closed, and the plugin writes every decision to an audit log.
 
-This package targets OpenCode v2 (`opencode2`) only. It depends on `@opencode-ai/plugin` at an exact beta version, pinned as a runtime dependency, because opencode installs published plugins with production dependencies only.
+This package targets OpenCode v2 (`opencode2`) only. It depends on `@opencode/plugin` at an exact version, pinned as a runtime dependency, because opencode installs published plugins with production dependencies only.
 
 ## Commands
 
@@ -60,7 +60,7 @@ npm is the package manager. Bun is the test runner only. There is no linter.
 - The plugin redacts secrets before the evidence reaches the model and before it reaches the audit log.
 - A per-call nonce delimits the evidence sections, and the plugin breaks delimiter look-alikes in untrusted text, so evidence cannot forge a policy section.
 - The plugin caches a decision only when the host supplies a tool call id, and reviews a request without one every time.
-- `@opencode-ai/plugin` is pinned to an exact beta version and declared as a runtime dependency.
+- `@opencode/plugin` is pinned to an exact version and declared as a runtime dependency.
 - The policy text and the code are original work, released under MIT.
 
 ## Git

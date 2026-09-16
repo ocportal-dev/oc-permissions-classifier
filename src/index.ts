@@ -1,5 +1,5 @@
 import { homedir } from "node:os"
-import { Plugin } from "@opencode-ai/plugin"
+import { Plugin } from "@opencode/plugin"
 import { createAuditWriter } from "./audit.js"
 import { classify, type ClassifierDeps } from "./classifier.js"
 import { resolveConfig } from "./config.js"
