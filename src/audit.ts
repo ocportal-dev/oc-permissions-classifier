@@ -1,6 +1,6 @@
 import { appendFile, chmod, mkdir } from "node:fs/promises"
 import { dirname } from "node:path"
-import { redactSecrets } from "./redact.js"
+import { redactSecrets, redactValue } from "./redact.js"
 import type { AuditRecord } from "./types.js"
 
 const REASON_LIMIT = 2000
@@ -20,6 +20,14 @@ export function redactRecord(record: AuditRecord): AuditRecord {
     reason: redactSecrets(record.reason).slice(0, REASON_LIMIT),
   }
   if (record.model !== undefined) redacted.model = redactSecrets(record.model)
+  if (record.answers !== undefined) {
+    redacted.answers = redactValue(record.answers) as Record<string, unknown>
+    // These fixed question IDs describe judgments, not credential values. Redact
+    // their contents without treating the entire answer as a secret-bearing field.
+    for (const id of ["secret_disclosure", "user_authorization"]) {
+      if (Object.hasOwn(record.answers, id)) redacted.answers[id] = redactValue(record.answers[id])
+    }
+  }
   const decision = record.decision
   if (decision) redacted.decision = { ...decision, rationale: redactSecrets(decision.rationale) }
   return redacted

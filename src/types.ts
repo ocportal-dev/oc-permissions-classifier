@@ -25,7 +25,7 @@ export interface RiskPolicy {
   allow: Record<RiskLevel, Authorization[]>
 }
 
-/** The structured answer the model returns. */
+/** The structured answer the reviewer produces. `version` is 1 for the LLM backend and 2 for the TypeSafe backend. */
 export interface Decision {
   version: number
   outcome: Outcome
@@ -73,6 +73,10 @@ export interface ClassifierResult {
   reason: string
   decisionSource: DecisionSource
   decision?: Decision
+  backend: "llm" | "typesafe"
+  promptVersion: string
+  model?: string
+  answers?: Record<string, unknown>
   attempts: number
   warnings: string[]
 }
@@ -80,6 +84,7 @@ export interface ClassifierResult {
 /** One line of the audit log. */
 export interface AuditRecord {
   schemaVersion: 1
+  backend: "llm" | "typesafe"
   promptVersion: string
   timestamp: string
   durationMs: number
@@ -97,6 +102,8 @@ export interface AuditRecord {
   reason: string
   decision?: Decision
   model?: string
+  /** Raw backend answers. TypeSafe only. */
+  answers?: Record<string, unknown>
   attempts: number
   warnings: string[]
 }

@@ -9,6 +9,7 @@ const TOKEN = "Bearer abcdefghijklmnopqrstuvwxyz"
 
 const record = (overrides: Partial<AuditRecord> = {}): AuditRecord => ({
   schemaVersion: 1,
+  backend: "llm",
   promptVersion: "2026-01-01",
   timestamp: "2026-01-01T00:00:00.000Z",
   durationMs: 12,
@@ -30,6 +31,21 @@ const readLines = async (path: string): Promise<string[]> => {
   const text = await readFile(path, "utf8")
   return text.split("\n").filter((line) => line.length > 0)
 }
+
+test("preserves TypeSafe judgment probabilities while redacting their contents", () => {
+  const result = redactRecord(record({
+    backend: "typesafe",
+    answers: {
+      secret_disclosure: { type: "noul", noul: 0.8, note: TOKEN, apiKey: "private-value" },
+      user_authorization: { type: "choice", choice: "high", confidence: 0.9, probabilities: { high: 0.9 } },
+      apiKey: "private-value",
+    },
+  }))
+  expect(result.answers?.secret_disclosure).toMatchObject({ type: "noul", noul: 0.8 })
+  expect(result.answers?.user_authorization).toMatchObject({ choice: "high", confidence: 0.9 })
+  expect(JSON.stringify(result.answers)).not.toContain("private-value")
+  expect(JSON.stringify(result.answers)).not.toContain("abcdefghijklmnopqrstuvwxyz")
+})
 
 let dir: string
 
@@ -124,4 +140,13 @@ test("redactRecord caps the reason at 2000 characters", () => {
   const redacted = redactRecord(record({ reason: "a".repeat(3000) }))
 
   expect(redacted.reason).toHaveLength(2000)
+})
+
+test("redacts secrets inside the raw answers", () => {
+  const redacted = redactRecord(
+    record({ backend: "typesafe", answers: { x: { noul: 0.1, note: "token=abcdefghijklmnop" } } }),
+  )
+  expect(JSON.stringify(redacted.answers)).not.toContain("abcdefghijklmnop")
+  expect(JSON.stringify(redacted.answers)).toContain("[REDACTED:")
+  expect((redacted.answers as { x: { noul: number } }).x.noul).toBe(0.1)
 })

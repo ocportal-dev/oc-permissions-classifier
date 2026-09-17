@@ -3,7 +3,44 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { parseModelRef } from "./model-ref.js"
 import { AUTHORIZATIONS, RISK_LEVELS, type Authorization, type ModelRef, type RiskLevel, type RiskPolicy } from "./types.js"
 
+export type Backend = "llm" | "typesafe"
+
+/** Probability (or score) at or above which a hazard question fires. */
+export interface HazardThresholds {
+  steering: number
+  secret: number
+  destructive: number
+  weakensSecurity: number
+  outsideWorkspace: number
+  /** A score over three levels, so the range is 0..2. */
+  remoteOpacity: number
+}
+
+export const DEFAULT_HAZARD_THRESHOLDS: HazardThresholds = {
+  steering: 0.5,
+  secret: 0.5,
+  destructive: 0.7,
+  weakensSecurity: 0.7,
+  outsideWorkspace: 0.7,
+  remoteOpacity: 1.5,
+}
+
+export interface TypeSafeConfig {
+  apiKey: string | undefined
+  model: string
+  baseURL: string
+  timeoutMs: number
+  maxRetries: number
+  thresholds: HazardThresholds
+}
+
+const DEFAULT_TYPESAFE_MODEL = "jev-latest"
+const DEFAULT_TYPESAFE_BASE_URL = "https://api.typesafe.ai"
+const TYPESAFE_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+const TYPESAFE_OPTION_KEYS = new Set(["apiKey", "model", "baseURL", "timeoutMs", "maxRetries", "thresholds"])
+
 export interface ClassifierConfig {
+  backend: Backend
   model: ModelRef | undefined
   escalation: "ask" | "deny"
   timeoutMs: number
@@ -17,6 +54,9 @@ export interface ClassifierConfig {
   riskPolicy: RiskPolicy
   ignoreActions: string[]
   debug: boolean
+  showDecisions: boolean
+  showDecisionTiming: boolean
+  typesafe: TypeSafeConfig
 }
 
 /** The parts of the host environment the configuration depends on. */
@@ -24,6 +64,8 @@ export interface ConfigEnv {
   projectDirectory: string
   xdgDataHome?: string
   home: string
+  /** The `TYPESAFE_API_KEY` environment variable, used when `options.typesafe.apiKey` is unset. */
+  typesafeApiKey?: string
   /** Defaults to `process.platform`. Path comparison ignores case on darwin and win32. */
   platform?: string
   /** Defaults to a walk up to the nearest existing ancestor. Injected by the tests. */
@@ -79,8 +121,9 @@ export function resolveConfig(
   const raw = recordValue(options) ?? {}
   const fallbackAuditPath = defaultAuditPath(env)
 
+  const backend = enumOption(raw.backend, ["llm", "typesafe"] as const, "llm", "options.backend", warnings)
   const model = parseModelRef(raw.model)
-  if (!model) {
+  if (!model && backend === "llm") {
     warnings.push(
       "options.model is missing or invalid; set it to \"provider/model\" so the classifier can run",
     )
@@ -88,6 +131,7 @@ export function resolveConfig(
 
   return {
     config: {
+      backend,
       model,
       escalation: enumOption(raw.escalation, ["ask", "deny"] as const, "ask", "options.escalation", warnings),
       timeoutMs: numberOption(raw.timeoutMs, 60000, 1000, 600000, false, "options.timeoutMs", warnings),
@@ -117,9 +161,98 @@ export function resolveConfig(
       riskPolicy: riskPolicyOption(raw.riskPolicy, warnings),
       ignoreActions: ignoreActionsOption(raw.ignoreActions, warnings),
       debug: booleanOption(raw.debug, false, "options.debug", warnings),
+      showDecisions: booleanOption(raw.showDecisions, true, "options.showDecisions", warnings),
+      showDecisionTiming: booleanOption(raw.showDecisionTiming, false, "options.showDecisionTiming", warnings),
+      typesafe: typesafeOption(raw.typesafe, env, backend, warnings),
     },
     warnings,
   }
+}
+
+function typesafeOption(value: unknown, env: ConfigEnv, backend: Backend, warnings: string[]): TypeSafeConfig {
+  const raw = recordValue(value) ?? {}
+  if (value !== undefined && !recordValue(value)) {
+    warnings.push("options.typesafe must be an object; using the defaults")
+  }
+  for (const key of Object.keys(raw)) {
+    if (!TYPESAFE_OPTION_KEYS.has(key)) {
+      warnings.push(`options.typesafe.${key} is not a recognized option; ignoring it`)
+    }
+  }
+
+  let apiKey = env.typesafeApiKey?.trim() || undefined
+  if (raw.apiKey !== undefined) {
+    const configuredKey = stringValue(raw.apiKey)?.trim()
+    if (configuredKey) apiKey = configuredKey
+    else warnings.push("options.typesafe.apiKey must be a non-empty string; using TYPESAFE_API_KEY when available")
+  }
+  if (!apiKey && backend === "typesafe") {
+    warnings.push(
+      "options.typesafe.apiKey is missing; set it (or TYPESAFE_API_KEY) so the typesafe backend can run",
+    )
+  }
+
+  let model = DEFAULT_TYPESAFE_MODEL
+  if (raw.model !== undefined) {
+    const text = stringValue(raw.model)?.trim()
+    if (text && TYPESAFE_MODEL_PATTERN.test(text)) model = text
+    else warnings.push(`options.typesafe.model must be a plain model name such as jev-latest; using ${DEFAULT_TYPESAFE_MODEL}`)
+  }
+
+  let baseURL = DEFAULT_TYPESAFE_BASE_URL
+  if (raw.baseURL !== undefined) {
+    const text = stringValue(raw.baseURL)?.trim()
+    if (text && /^https?:\/\//.test(text)) baseURL = text.replace(/\/+$/, "")
+    else warnings.push(`options.typesafe.baseURL must start with http:// or https://; using ${DEFAULT_TYPESAFE_BASE_URL}`)
+  }
+
+  return {
+    apiKey,
+    model,
+    baseURL,
+    timeoutMs: numberOption(raw.timeoutMs, 15000, 1000, 600000, false, "options.typesafe.timeoutMs", warnings),
+    maxRetries: integerOption(raw.maxRetries, 2, 0, 5, "options.typesafe.maxRetries", warnings),
+    thresholds: thresholdsOption(raw.thresholds, warnings),
+  }
+}
+
+function thresholdsOption(value: unknown, warnings: string[]): HazardThresholds {
+  const merged: HazardThresholds = { ...DEFAULT_HAZARD_THRESHOLDS }
+  if (value === undefined) return merged
+  const raw = recordValue(value)
+  if (!raw) {
+    warnings.push("options.typesafe.thresholds must be an object; using the defaults")
+    return merged
+  }
+  for (const [key, item] of Object.entries(raw)) {
+    if (!(key in DEFAULT_HAZARD_THRESHOLDS)) {
+      warnings.push(`options.typesafe.thresholds.${key} is not a hazard threshold; ignoring it`)
+      continue
+    }
+    const name = key as keyof HazardThresholds
+    const max = name === "remoteOpacity" ? 2 : 1
+    merged[name] = numberOption(item, merged[name], 0, max, false, `options.typesafe.thresholds.${key}`, warnings)
+  }
+  return merged
+}
+
+function integerOption(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+  name: string,
+  warnings: string[],
+): number {
+  if (value === undefined) return fallback
+  const parsed = numberValue(value)
+  if (parsed === undefined || !Number.isInteger(parsed)) {
+    warnings.push(`${name} must be an integer; using ${fallback}`)
+    return fallback
+  }
+  const clamped = Math.min(Math.max(parsed, min), max)
+  if (clamped !== parsed) warnings.push(`${name} must be between ${min} and ${max}; using ${clamped}`)
+  return clamped
 }
 
 function enumOption<T extends string>(

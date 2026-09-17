@@ -1,15 +1,13 @@
 import { brakeReason } from "./brake.js"
 import type { ClassifierConfig } from "./config.js"
-import { enforceDecision, parseDecision } from "./decision.js"
-import { buildEvidence, extractIntent } from "./evidence.js"
-import { buildPrompt, DEFAULT_POLICY, JSON_ONLY_RETRY_NOTE } from "./policy.js"
+import { enforceDecision } from "./decision.js"
+import { extractIntent } from "./evidence.js"
 import { capText, redactSecrets } from "./redact.js"
-import type { ClassifierResult, CorrelatedCall, Decision, PermissionEvent } from "./types.js"
-
-const ERROR_LIMIT = 300
+import type { Reviewer, ReviewOutcome } from "./reviewer.js"
+import type { ClassifierResult, CorrelatedCall, PermissionEvent } from "./types.js"
 
 export interface ClassifierDeps {
-  generate: (prompt: string) => Promise<string>
+  reviewer: Reviewer
   transcript: (sessionID: string) => Promise<readonly unknown[]>
 }
 
@@ -22,17 +20,10 @@ export interface ClassifyInput {
 
 const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
-/**
- * Rejects when `ms` passes. The host call cannot be cancelled, so the losing promise keeps
- * running: its rejection is swallowed here, otherwise a late failure would be unhandled.
- */
-export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  promise.catch(() => {})
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const expiry = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`timeout after ${ms} ms`)), ms)
-  })
-  return Promise.race([promise, expiry]).finally(() => clearTimeout(timer))
+function safeReviewerError(error: unknown, config: ClassifierConfig): string {
+  const key = config.typesafe.apiKey
+  const message = key ? describe(error).split(key).join("[REDACTED:api-key]") : describe(error)
+  return capText(redactSecrets(message), 300)
 }
 
 /**
@@ -42,104 +33,72 @@ export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  */
 export async function classify(input: ClassifyInput, deps: ClassifierDeps): Promise<ClassifierResult> {
   const { config, correlated, event, projectDirectory } = input
+  const { reviewer } = deps
+  const base = { backend: reviewer.backend, promptVersion: reviewer.version }
   const warnings: string[] = []
 
   const brake = brakeReason(event.action, event.resources)
   if (brake) {
-    return { outcome: "deny", reason: brake, decisionSource: "brake", attempts: 0, warnings }
-  }
-
-  if (!config.model) {
-    return {
-      outcome: "escalate",
-      reason: "options.model is missing or invalid; no model review was performed",
-      decisionSource: "config-missing",
-      attempts: 0,
-      warnings,
-    }
+    return { ...base, outcome: "deny", reason: brake, decisionSource: "brake", attempts: 0, warnings }
   }
 
   let messages: readonly unknown[] = []
   try {
     messages = await deps.transcript(event.sessionID)
   } catch (error) {
-    warnings.push(`transcript unavailable: ${describe(error)}`)
+    warnings.push(`transcript unavailable: ${safeReviewerError(error, config)}`)
   }
 
   const intent = extractIntent(messages, {
     intentMessages: config.intentMessages,
     maxIntentChars: config.maxIntentChars,
   })
-  const evidence = buildEvidence({
-    event,
-    intent,
-    correlated,
-    projectDirectory,
-    maxEvidenceChars: config.maxEvidenceChars,
-    maxIntentChars: config.maxIntentChars,
-  })
-  const policy = config.policy ?? DEFAULT_POLICY
 
-  let attempts = 0
-  let decision: Decision | undefined
-  // The second attempt only repeats the request with a stricter output note.
-  for (const retryNote of [undefined, JSON_ONLY_RETRY_NOTE]) {
-    attempts += 1
-    let text: string
-    try {
-      text = await withTimeout(deps.generate(buildPrompt(policy, evidence, retryNote)), config.timeoutMs)
-    } catch (error) {
-      return callFailure(error, config.timeoutMs, attempts, warnings)
-    }
-    decision = parseDecision(text)
-    if (decision) break
-  }
-
-  if (!decision) {
+  let review: ReviewOutcome
+  try {
+    review = await reviewer.review({ event, correlated, intent, config, projectDirectory })
+  } catch (error) {
     return {
+      ...base,
       outcome: "escalate",
-      reason: `classifier returned an unparseable decision after ${attempts} attempts`,
-      decisionSource: "parse-failure",
-      attempts,
+      reason: `reviewer failed: ${safeReviewerError(error, config)}`,
+      decisionSource: "model-error",
+      attempts: 0,
+      warnings,
+    }
+  }
+  warnings.push(...review.warnings.map((warning) => safeReviewerError(warning, config)))
+
+  if (review.failure || !review.decision) {
+    const failure = review.failure ?? {
+      reason: "the reviewer returned neither a decision nor a failure",
+      decisionSource: "model-error" as const,
+    }
+    return {
+      ...base,
+      outcome: "escalate",
+      reason: safeReviewerError(failure.reason, config),
+      decisionSource: failure.decisionSource,
+      attempts: review.attempts,
+      model: review.model,
+      answers: review.answers,
       warnings,
     }
   }
 
-  const gate = enforceDecision(decision, {
+  const gate = enforceDecision(review.decision, {
     confidenceThreshold: config.confidenceThreshold,
     riskPolicy: config.riskPolicy,
   })
   return {
+    ...base,
     outcome: gate.outcome,
     reason: gate.reason,
     decisionSource: gate.changed ? "gate" : "model",
-    decision,
-    attempts,
-    warnings,
-  }
-}
-
-function callFailure(
-  error: unknown,
-  timeoutMs: number,
-  attempts: number,
-  warnings: string[],
-): ClassifierResult {
-  const message = describe(error)
-  if (message.startsWith("timeout")) {
-    return {
-      outcome: "escalate",
-      reason: `classifier model timed out after ${timeoutMs} ms`,
-      decisionSource: "timeout",
-      attempts,
-      warnings,
-    }
-  }
-  return {
-    outcome: "escalate",
-    reason: `classifier model call failed: ${capText(redactSecrets(message), ERROR_LIMIT)}`,
-    decisionSource: "model-error",
-    attempts,
+    decision: review.decision,
+    attempts: review.attempts,
+    model: review.model,
+    answers: review.answers,
     warnings,
   }
 }

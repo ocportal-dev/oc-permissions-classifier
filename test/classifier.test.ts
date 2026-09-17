@@ -1,9 +1,15 @@
 import { expect, it } from "bun:test"
 import { classify, type ClassifierDeps } from "../src/classifier.js"
-import { DEFAULT_RISK_POLICY, type ClassifierConfig } from "../src/config.js"
+import { DEFAULT_HAZARD_THRESHOLDS, DEFAULT_RISK_POLICY, type ClassifierConfig } from "../src/config.js"
+import { PROMPT_VERSION } from "../src/policy.js"
+import { createLlmReviewer } from "../src/reviewers/llm.js"
+import { createTypeSafeReviewer } from "../src/reviewers/typesafe.js"
+import { QUESTIONS_VERSION } from "../src/typesafe/questions.js"
 import type { PermissionEvent } from "../src/types.js"
+import { answers, choiceAnswer, okResult } from "./helpers/answers.js"
 
 const BASE_CONFIG: ClassifierConfig = {
+  backend: "llm",
   model: { providerID: "local", id: "reviewer" },
   escalation: "ask",
   timeoutMs: 1000,
@@ -17,6 +23,16 @@ const BASE_CONFIG: ClassifierConfig = {
   riskPolicy: DEFAULT_RISK_POLICY,
   ignoreActions: [],
   debug: false,
+  showDecisions: true,
+  showDecisionTiming: false,
+  typesafe: {
+    apiKey: undefined,
+    model: "jev-latest",
+    baseURL: "https://api.typesafe.ai",
+    timeoutMs: 15000,
+    maxRetries: 2,
+    thresholds: DEFAULT_HAZARD_THRESHOLDS,
+  },
 }
 
 const config = (overrides: Partial<ClassifierConfig> = {}): ClassifierConfig => ({
@@ -55,13 +71,15 @@ function scripted(answers: (string | Error | Promise<string>)[], messages: reado
   return {
     prompts,
     deps: {
-      generate: (prompt) => {
-        prompts.push(prompt)
-        const answer = answers.shift()
-        if (answer instanceof Error) return Promise.reject(answer)
-        if (answer === undefined) return Promise.reject(new Error("no scripted answer"))
-        return Promise.resolve(answer)
-      },
+      reviewer: createLlmReviewer({
+        generate: (prompt) => {
+          prompts.push(prompt)
+          const answer = answers.shift()
+          if (answer instanceof Error) return Promise.reject(answer)
+          if (answer === undefined) return Promise.reject(new Error("no scripted answer"))
+          return Promise.resolve(answer)
+        },
+      }),
       transcript: async () => messages,
     },
   }
@@ -78,6 +96,9 @@ it("allows on a valid decision", async () => {
   expect(result.attempts).toBe(1)
   expect(result.decision?.risk_level).toBe("low")
   expect(result.warnings).toEqual([])
+  expect(result.backend).toBe("llm")
+  expect(result.promptVersion).toBe(PROMPT_VERSION)
+  expect(result.model).toBe("local/reviewer")
 })
 
 it("reads a decision wrapped in code fences", async () => {
@@ -126,31 +147,6 @@ it("escalates when the model call times out", async () => {
   expect(result.reason).toBe("classifier model timed out after 20 ms")
 })
 
-it("does not leave a late rejection unhandled", async () => {
-  const unhandled: unknown[] = []
-  const listener = (reason: unknown): void => {
-    unhandled.push(reason)
-  }
-  // bun-types narrows process.on, so the node event needs its own view of the emitter.
-  const events = process as unknown as {
-    on(event: "unhandledRejection", listener: (reason: unknown) => void): void
-    off(event: "unhandledRejection", listener: (reason: unknown) => void): void
-  }
-  events.on("unhandledRejection", listener)
-
-  let fail: (error: Error) => void = () => {}
-  const late = new Promise<string>((_, reject) => {
-    fail = reject
-  })
-  const result = await run(scripted([late]), { timeoutMs: 20 })
-  expect(result.decisionSource).toBe("timeout")
-
-  fail(new Error("late provider failure"))
-  await new Promise((resolve) => setTimeout(resolve, 30))
-  events.off("unhandledRejection", listener)
-  expect(unhandled).toEqual([])
-})
-
 it("denies a braked request without calling the model", async () => {
   const recorder = scripted([decision()])
   const result = await run(recorder, {}, event({ action: "shell", resources: ["rm -rf /"] }))
@@ -171,7 +167,7 @@ it("escalates without calling the model when no model is configured", async () =
 
 it("classifies with a warning when the transcript is unavailable", async () => {
   const deps: ClassifierDeps = {
-    generate: async () => decision(),
+    reviewer: createLlmReviewer({ generate: async () => decision() }),
     transcript: async () => {
       throw new Error("session gone")
     },
@@ -182,6 +178,28 @@ it("classifies with a warning when the transcript is unavailable", async () => {
   )
   expect(result.outcome).toBe("allow")
   expect(result.warnings).toEqual(["transcript unavailable: session gone"])
+})
+
+it("redacts the configured TypeSafe key from transcript warnings", async () => {
+  const key = "configured-test-api-key"
+  const deps: ClassifierDeps = {
+    reviewer: createTypeSafeReviewer({ systemOne: async () => okResult() }),
+    transcript: async () => {
+      throw new Error(`session failed with ${key}`)
+    },
+  }
+  const result = await classify(
+    {
+      event: event(),
+      config: config({
+        backend: "typesafe",
+        typesafe: { ...BASE_CONFIG.typesafe, apiKey: key },
+      }),
+      projectDirectory: "/project",
+    },
+    deps,
+  )
+  expect(result.warnings[0]).not.toContain(key)
 })
 
 it("passes the user intent to the model", async () => {
@@ -196,4 +214,121 @@ it("escalates when the gate overrides a model allow", async () => {
   expect(result.decisionSource).toBe("gate")
   expect(result.reason).toContain("below the threshold")
   expect(result.decision?.outcome).toBe("allow")
+})
+
+it("classifies with the TypeSafe reviewer and preserves its backend fields", async () => {
+  const deps: ClassifierDeps = {
+    reviewer: createTypeSafeReviewer({ systemOne: async () => okResult() }),
+    transcript: async () => [],
+  }
+  const result = await classify(
+    {
+      event: event(),
+      config: config({
+        backend: "typesafe",
+        model: undefined,
+        typesafe: { ...BASE_CONFIG.typesafe, apiKey: "configured-test-api-key" },
+      }),
+      projectDirectory: "/project",
+    },
+    deps,
+  )
+
+  expect(result.outcome).toBe("allow")
+  expect(result.decisionSource).toBe("model")
+  expect(result.backend).toBe("typesafe")
+  expect(result.promptVersion).toBe(QUESTIONS_VERSION)
+  expect(result.model).toBe("jev-1.13.0")
+  expect(result.decision?.version).toBe(2)
+  expect(result.answers).toBeDefined()
+})
+
+it("applies the shared confidence gate to a TypeSafe allow", async () => {
+  const lowConfidence = {
+    ...okResult(),
+    answers: answers({
+      outcome: choiceAnswer("allow", ["allow", "deny", "escalate"], 0.2),
+    }),
+  }
+  const deps: ClassifierDeps = {
+    reviewer: createTypeSafeReviewer({ systemOne: async () => lowConfidence }),
+    transcript: async () => [],
+  }
+  const result = await classify(
+    {
+      event: event(),
+      config: config({
+        backend: "typesafe",
+        model: undefined,
+        typesafe: { ...BASE_CONFIG.typesafe, apiKey: "configured-test-api-key" },
+      }),
+      projectDirectory: "/project",
+    },
+    deps,
+  )
+
+  expect(result.outcome).toBe("escalate")
+  expect(result.decisionSource).toBe("gate")
+  expect(result.decision?.outcome).toBe("allow")
+})
+
+it("fails closed when a reviewer throws and redacts the configured key", async () => {
+  const key = "configured-test-api-key"
+  const deps: ClassifierDeps = {
+    reviewer: {
+      backend: "typesafe",
+      version: QUESTIONS_VERSION,
+      review: async () => {
+        throw new Error(`provider exposed ${key}`)
+      },
+    },
+    transcript: async () => [],
+  }
+  const result = await classify(
+    {
+      event: event(),
+      config: config({
+        backend: "typesafe",
+        typesafe: { ...BASE_CONFIG.typesafe, apiKey: key },
+      }),
+      projectDirectory: "/project",
+    },
+    deps,
+  )
+
+  expect(result.outcome).toBe("escalate")
+  expect(result.decisionSource).toBe("model-error")
+  expect(result.reason).not.toContain(key)
+})
+
+it("fails closed when a reviewer returns both a decision and a failure", async () => {
+  const deps: ClassifierDeps = {
+    reviewer: {
+      backend: "typesafe",
+      version: QUESTIONS_VERSION,
+      review: async () => ({
+        decision: {
+          version: 2,
+          outcome: "allow",
+          risk_level: "low",
+          user_authorization: "high",
+          scope_alignment: "aligned",
+          evidence_completeness: "sufficient",
+          rationale: "allow",
+          confidence: 1,
+        },
+        failure: { reason: "ambiguous reviewer result", decisionSource: "parse-failure" },
+        attempts: 1,
+        warnings: [],
+      }),
+    },
+    transcript: async () => [],
+  }
+  const result = await classify(
+    { event: event(), config: config(), projectDirectory: "/project" },
+    deps,
+  )
+
+  expect(result.outcome).toBe("escalate")
+  expect(result.decisionSource).toBe("parse-failure")
 })
