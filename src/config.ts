@@ -134,7 +134,7 @@ export function resolveConfig(
       backend,
       model,
       escalation: enumOption(raw.escalation, ["ask", "deny"] as const, "ask", "options.escalation", warnings),
-      timeoutMs: numberOption(raw.timeoutMs, 60000, 1000, 600000, false, "options.timeoutMs", warnings),
+      timeoutMs: numberOption(raw.timeoutMs, 30000, 1000, 600000, false, "options.timeoutMs", warnings),
       confidenceThreshold: numberOption(
         raw.confidenceThreshold,
         0.7,

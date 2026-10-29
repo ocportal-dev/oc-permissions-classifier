@@ -71,7 +71,7 @@ Restart `opencode2` after you edit the config.
 | `backend` | `"llm" \| "typesafe"` | `"llm"` | Selects the reviewer. |
 | `model` | `"provider/model[#variant]"` or `{ providerID, id, variant? }` | required for `llm` | Split at the first `/`. Missing or invalid values fail closed. Unused by TypeSafe. |
 | `escalation` | `"ask" \| "deny"` | `"ask"` | What to do when the plugin cannot allow. |
-| `timeoutMs` | number | `60000` | Time budget for each LLM call. |
+| `timeoutMs` | number | `30000` | Time budget for each LLM call. |
 | `confidenceThreshold` | number, 0..1 | `0.7` | Minimum confidence for an auto-allow. |
 | `intentMessages` | integer | `8` | How many recent user messages to include. |
 | `maxIntentChars` | integer | `8000` | Character cap on the user intent section. |

@@ -27,7 +27,7 @@ it("applies every default", () => {
     backend: "llm",
     model: { providerID: "acme", id: "model" },
     escalation: "ask",
-    timeoutMs: 60000,
+    timeoutMs: 30000,
     confidenceThreshold: 0.7,
     intentMessages: 8,
     maxIntentChars: 8000,
@@ -232,7 +232,7 @@ it.each([[null], [42], [[]], [undefined], ["text"]])("falls back to the defaults
   const { config, warnings } = resolveConfig(options, env)
   expect(config.model).toBeUndefined()
   expect(config.escalation).toBe("ask")
-  expect(config.timeoutMs).toBe(60000)
+  expect(config.timeoutMs).toBe(30000)
   expect(config.auditPath).toBe(DEFAULT_PATH)
   expect(warned(warnings, "options.model")).toBe(true)
 })
